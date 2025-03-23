@@ -1,13 +1,11 @@
-import hashlib, psycopg2,tomllib
+import psycopg2, tomllib, _common, os
 from tabulate import tabulate
+from _common import Crypto
+
 
 class Policy:
     def check_policy(self, password):
         return all(password[i] != password[i + 1] for i in range(len(password) - 1))
-
-class Crypto:
-    def hash(self, text:str, encoding:str):
-        return hashlib.sha256(bytes(text, encoding=encoding)).hexdigest()
 
 class DBClass:
     def __init__(self, dbname, user, password, host, port):
@@ -35,7 +33,7 @@ class DBClass:
 
     def init_values(self):
         hash_v = Crypto()
-        init_admin_passw = hash_v.hash('', encoding='utf-8')
+        init_admin_passw = hash_v.hash256('', encoding='utf-8')
         self.request("INSERT INTO users(username, passw) VALUES('admin','" + init_admin_passw + "');")
 
 class Auth:
@@ -52,7 +50,7 @@ class Auth:
     def authenticate(self, username, password):
         hash_v = Crypto()
         result = self.db.request("SELECT passw FROM users WHERE username=%s;", (username,))
-        return result and result[0][0] == hash_v.hash(password,'utf-8')
+        return result and result[0][0] == hash_v.hash256(password, 'utf-8')
 
 class User:
     def __init__(self, username, password, db:DBClass):
@@ -82,7 +80,8 @@ class User:
             return
 
         hash_v = Crypto()
-        self.db.request("UPDATE users SET passw=%s WHERE username=%s;", (hash_v.hash(new_password,'utf-8'), self.username))
+        self.db.request("UPDATE users SET passw=%s WHERE username=%s;", (
+        hash_v.hash256(new_password, 'utf-8'), self.username))
         self.password = new_password
         print("Password changed successfully!")
 
@@ -105,7 +104,7 @@ class Admin(User):
         if not Auth(self.db).identify(username):
             hash_v = Crypto()
             self.db.request("INSERT INTO users(username, passw) VALUES(%s, %s);",
-                            (username,hash_v.hash('', 'utf-8'),))
+                            (username, hash_v.hash256('', 'utf-8'),))
             print("User added successfully!")
         else:
             print("Username already taken!")
@@ -176,11 +175,19 @@ def main(db):
         exit(0)
 
 if __name__ == '__main__':
-    with open('conf.toml', 'rb') as tf:
-        data = tomllib.load(tf)
-    db_info = data['database']
-    db = DBClass(db_info['name'], db_info['user'], db_info['password'], db_info['host'], db_info['port'])
-    db.create_init_table_if_not_exists()
-    if not db.request("SELECT * FROM users"):
-        db.init_values()
-    main(db)
+    sign = _common.Signature()
+    reg = _common.Reg()
+    info = sign.col_info()
+    info['current_vol'] = os.getcwd().split("\\")[0]
+    if sign.gen_certificate(str(info))==reg.read_from()[0]:
+        with open('conf.toml', 'rb') as tf:
+            data = tomllib.load(tf)
+        db_info = data['database']
+        db = DBClass(db_info['name'], db_info['user'], db_info['password'], db_info['host'], db_info['port'])
+        db.create_init_table_if_not_exists()
+        if not db.request("SELECT * FROM users"):
+            db.init_values()
+        main(db)
+
+    else:
+        print("An error occurred during execution.")
