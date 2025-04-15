@@ -2,19 +2,20 @@ import psycopg2, tomllib, _common, os
 from tabulate import tabulate
 from _common import Crypto
 
+from Crypto.PublicKey import RSA
+from Crypto.Util.number import long_to_bytes
 
 class Policy:
     def check_policy(self, password):
         return all(password[i] != password[i + 1] for i in range(len(password) - 1))
 
 class DBClass:
-    def __init__(self, dbname, user, password, host, port, session_key):
+    def __init__(self, dbname, user, password, host, port):
         self.dbname = dbname
         self.user = user
         self.password = password
         self.host = host
         self.port = port
-        self.key = session_key
 
     def request(self, command, args=None):
         try:
@@ -34,50 +35,37 @@ class DBClass:
 
     def init_values(self):
         hash_v = Crypto()
-        init_username = hash_v.CryptoAPI('admin',self.key,0)
-        init_admin_passw = hash_v.CryptoAPI(hash_v.hash256('', encoding='utf-8'),self.key,0)
-        self.request("INSERT INTO users(username, passw) VALUES(%s, %s);",(init_username, init_admin_passw))
+        init_admin_passw = hash_v.hash256('', encoding='utf-8')
+        self.request("INSERT INTO users(username, passw) VALUES('admin','" + init_admin_passw + "');")
 
 class Auth:
-    def __init__(self, db:DBClass):
+    def __init__(self, db):
         self.db = db
 
     def identify(self, username):
-        cr = Crypto()
-        username = cr.CryptoAPI(username,self.db.key,0)
         return bool(self.db.request("SELECT 1 FROM users WHERE username=%s;", (username,)))
 
     def is_blocked(self, username):
-        cr = Crypto()
-        username = cr.CryptoAPI(username,self.db.key,0)
         result = self.db.request("SELECT is_blocked FROM users WHERE username=%s;", (username,))
         return result and result[0][0]
 
     def authenticate(self, username, password):
         hash_v = Crypto()
-        username = hash_v.CryptoAPI(username,self.db.key,0)
-        password = hash_v.CryptoAPI(hash_v.hash256(password, 'utf-8'), self.db.key, 0)
         result = self.db.request("SELECT passw FROM users WHERE username=%s;", (username,))
-        return result and result[0][0] == password
+        return result and result[0][0] == hash_v.hash256(password, 'utf-8')
 
 class User:
     def __init__(self, username, password, db:DBClass):
         self.username = username
         self.password = password
         self.db = db
-        self.cr = Crypto()
 
     def change_password(self):
-
-
         if input("Enter old password:") != self.password:
             print("Incorrect password!")
             return
         new_password = input("Enter new password:")
-
-
-        username= self.cr.CryptoAPI(self.username,self.db.key,0)
-        is_pass_policy = self.db.request("SELECT set_pass_policy FROM users WHERE username=%s;", (username,))
+        is_pass_policy = self.db.request("SELECT set_pass_policy FROM users WHERE username=%s;", (self.username,))
         pass_pol_obj = Policy() if is_pass_policy[0][0] else None
         if new_password == self.password:
             print("New password cannot be the same!")
@@ -93,9 +81,9 @@ class User:
             print("Entered password does not match with new password!")
             return
 
-        self.cr = Crypto()
+        hash_v = Crypto()
         self.db.request("UPDATE users SET passw=%s WHERE username=%s;", (
-        self.cr.CryptoAPI(cr.hash256(new_password, 'utf-8'),self.db.key,0), username))
+        hash_v.hash256(new_password, 'utf-8'), self.username))
         self.password = new_password
         print("Password changed successfully!")
 
@@ -110,15 +98,15 @@ class User:
 
 class Admin(User):
     def list_users(self):
-        data = self.db.request("SELECT username, is_blocked, set_pass_policy FROM users;")
-        data = [(self.cr.CryptoAPI(i[0],self.db.key,1),i[1],i[2]) for i in data]
-        print(tabulate(data,headers=['Username', 'Blocked','PassPolicy']))
+        print(tabulate(self.db.request("SELECT username, is_blocked, set_pass_policy FROM users;"),
+                       headers=['Username', 'Blocked','PassPolicy']))
 
     def add_user(self):
         username = input("Enter username: ")
         if not Auth(self.db).identify(username):
+            hash_v = Crypto()
             self.db.request("INSERT INTO users(username, passw) VALUES(%s, %s);",
-                            (self.cr.CryptoAPI(username,self.db.key,0), self.cr.CryptoAPI(self.cr.hash256('', 'utf-8'),self.db.key,0),))
+                            (username, hash_v.hash256('', 'utf-8'),))
             print("User added successfully!")
         else:
             print("Username already taken!")
@@ -128,7 +116,6 @@ class Admin(User):
         if username=='admin':
             print("Admin cannot block himself!")
             return
-        username = self.cr.CryptoAPI(username,self.db.key,0)
         request = self.db.request("SELECT is_blocked FROM users WHERE username=%s;", (username,))
         if request and request[0][0]==False:
             self.db.request("UPDATE users SET is_blocked = TRUE WHERE username=%s;", (username,))
@@ -141,14 +128,12 @@ class Admin(User):
 
     def set_policy(self):
         username = input("Enter username: ")
-        enc_username = self.cr.CryptoAPI(username,self.db.key,0)
-
-        request = self.db.request("SELECT set_pass_policy FROM users WHERE username=%s;", (enc_username,))
+        request = self.db.request("SELECT set_pass_policy FROM users WHERE username=%s;", (username,))
         if request and request[0][0]==False:
-            self.db.request("UPDATE users SET set_pass_policy = TRUE WHERE username=%s;", (enc_username,))
+            self.db.request("UPDATE users SET set_pass_policy = TRUE WHERE username=%s;", (username,))
             print("Password policy set!")
         elif request and request[0][0]==True:
-            self.db.request("UPDATE users SET set_pass_policy = FALSE WHERE username=%s;", (enc_username,))
+            self.db.request("UPDATE users SET set_pass_policy = FALSE WHERE username=%s;", (username,))
             print(f"Password policy removed from {username} account!")
         else:
             print("Unknown username!")
@@ -192,25 +177,22 @@ def main(db):
         exit(0)
 
 if __name__ == '__main__':
-    sign = _common.Signature()
+    sign_op = _common.Signature()
     reg = _common.Reg()
-    info = sign.col_info()
+    info = sign_op.col_info()
     info['current_vol'] = os.getcwd().split("\\")[0]
-    if sign.gen_certificate(str(info))==reg.read_from()[0]:
+    info = str(info)
+    signature = long_to_bytes(int(reg.read_from()[0]))
+    op_key = RSA.import_key(open('pkey', 'rb').read())
+
+    if sign_op.verify(info,op_key,signature)==0:
         with open('conf.toml', 'rb') as tf:
             data = tomllib.load(tf)
         db_info = data['database']
-        db = DBClass(db_info['name'], db_info['user'], db_info['password'], db_info['host'], db_info['port'], session_key=None)
+        db = DBClass(db_info['name'], db_info['user'], db_info['password'], db_info['host'], db_info['port'])
         db.create_init_table_if_not_exists()
-        if not db.request("select * from users;"):
-            cr = Crypto()
-            key = cr.gen_key(16)
-            db.key = key
-            print("Your db key(DON'T LOSE!):",key)
+        if not db.request("SELECT * FROM users"):
             db.init_values()
-        else:
-            key = input("Enter db key:")
-            db.key = key
         main(db)
 
     else:
