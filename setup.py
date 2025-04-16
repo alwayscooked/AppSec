@@ -1,6 +1,5 @@
-import os
-import winreg
-import _common
+import os,winreg,_common
+from Crypto.Util.number import *
 
 class Installer:
     def check_posgresql(self):
@@ -39,6 +38,7 @@ class Installer:
 
     def main(self, path = os.path.join(os.environ['USERPROFILE'], 'Documents'),
              files=('app.py','conf.toml'),app_dir='SimplePyApp', py_req:bool=True):
+
         if py_req:
             self.install_py_requirements()
 
@@ -64,9 +64,16 @@ class Installer:
 
         info = sign.col_info()
         info['current_vol'] = path.split('\\')[0]
-        sign_v = sign.gen_certificate(str(info))
-        reg.write_to(sign_v)
+        info = str(info)
+        # gen keys
+        keys = sign.gen_key()
+        with open('pkey', 'wb') as fl:
+            data = keys.public_key().exportKey()
+            fl.write(data)
 
+        #creation sign
+        cert = str(bytes_to_long(sign.gen_cert(info,keys)))
+        reg.write_to(cert)
         print("Залежності встановлено!")
         print("Встановлення закінчено!")
         return 0

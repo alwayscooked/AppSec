@@ -1,7 +1,8 @@
 import psycopg2, tomllib, _common, os
 from tabulate import tabulate
 from _common import Crypto
-
+from Crypto.PublicKey import RSA
+from Crypto.Util.number import long_to_bytes
 
 class Policy:
     def check_policy(self, password):
@@ -35,7 +36,8 @@ class DBClass:
     def init_values(self):
         hash_v = Crypto()
         init_username = hash_v.CryptoAPI('admin',self.key,0)
-        init_admin_passw = hash_v.CryptoAPI(hash_v.hash256('', encoding='utf-8'),self.key,0)
+        passw = hash_v.make_passwd('',4)
+        init_admin_passw = hash_v.CryptoAPI(passw,self.key,0)
         self.request("INSERT INTO users(username, passw) VALUES(%s, %s);",(init_username, init_admin_passw))
 
 class Auth:
@@ -56,9 +58,8 @@ class Auth:
     def authenticate(self, username, password):
         hash_v = Crypto()
         username = hash_v.CryptoAPI(username,self.db.key,0)
-        password = hash_v.CryptoAPI(hash_v.hash256(password, 'utf-8'), self.db.key, 0)
         result = self.db.request("SELECT passw FROM users WHERE username=%s;", (username,))
-        return result and result[0][0] == password
+        return result and hash_v.verify(password,hash_v.CryptoAPI(result[0][0],self.db.key, 1))
 
 class User:
     def __init__(self, username, password, db:DBClass):
@@ -68,14 +69,10 @@ class User:
         self.cr = Crypto()
 
     def change_password(self):
-
-
         if input("Enter old password:") != self.password:
             print("Incorrect password!")
             return
         new_password = input("Enter new password:")
-
-
         username= self.cr.CryptoAPI(self.username,self.db.key,0)
         is_pass_policy = self.db.request("SELECT set_pass_policy FROM users WHERE username=%s;", (username,))
         pass_pol_obj = Policy() if is_pass_policy[0][0] else None
@@ -93,9 +90,8 @@ class User:
             print("Entered password does not match with new password!")
             return
 
-        self.cr = Crypto()
         self.db.request("UPDATE users SET passw=%s WHERE username=%s;", (
-        self.cr.CryptoAPI(cr.hash256(new_password, 'utf-8'),self.db.key,0), username))
+        self.cr.CryptoAPI(self.cr.make_passwd(new_password,4),self.db.key,0), username))
         self.password = new_password
         print("Password changed successfully!")
 
@@ -118,7 +114,7 @@ class Admin(User):
         username = input("Enter username: ")
         if not Auth(self.db).identify(username):
             self.db.request("INSERT INTO users(username, passw) VALUES(%s, %s);",
-                            (self.cr.CryptoAPI(username,self.db.key,0), self.cr.CryptoAPI(self.cr.hash256('', 'utf-8'),self.db.key,0),))
+                            (self.cr.CryptoAPI(username,self.db.key,0), self.cr.CryptoAPI(self.cr.make_passwd('',4),self.db.key,0),))
             print("User added successfully!")
         else:
             print("Username already taken!")
@@ -192,11 +188,16 @@ def main(db):
         exit(0)
 
 if __name__ == '__main__':
-    sign = _common.Signature()
+    sign_op = _common.Signature()
     reg = _common.Reg()
-    info = sign.col_info()
+    info = sign_op.col_info()
     info['current_vol'] = os.getcwd().split("\\")[0]
-    if sign.gen_certificate(str(info))==reg.read_from()[0]:
+
+    info = str(info)
+    signature = long_to_bytes(int(reg.read_from()[0]))
+    op_key = RSA.import_key(open('pkey', 'rb').read())
+
+    if sign_op.verify(info, op_key, signature) == 0:
         with open('conf.toml', 'rb') as tf:
             data = tomllib.load(tf)
         db_info = data['database']
@@ -209,8 +210,11 @@ if __name__ == '__main__':
             print("Your db key(DON'T LOSE!):",key)
             db.init_values()
         else:
-            key = input("Enter db key:")
-            db.key = key
+            try:
+                key = input("Enter db key:")
+                db.key = key
+            except KeyboardInterrupt:
+                exit(0)
         main(db)
 
     else:
